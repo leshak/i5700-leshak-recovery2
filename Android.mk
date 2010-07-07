@@ -2,7 +2,7 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 commands_recovery_local_path := $(LOCAL_PATH)
-
+ 
 ifneq ($(TARGET_SIMULATOR),true)
 ifeq ($(TARGET_ARCH),arm)
 
@@ -22,7 +22,7 @@ LOCAL_MODULE := recovery
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 
-RECOVERY_API_VERSION := 0.4.1
+RECOVERY_API_VERSION := 0.5.2
 LOCAL_CFLAGS += -DRECOVERY_API_VERSION=$(RECOVERY_API_VERSION)
 
 # This binary is in the recovery ramdisk, which is otherwise a copy of root.

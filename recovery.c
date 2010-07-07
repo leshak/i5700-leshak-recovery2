@@ -27,6 +27,7 @@
 #include <sys/reboot.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <termios.h> 
@@ -55,6 +56,8 @@ static const char *SDCARD_PACKAGE_FILE = "SDCARD:update.zip";
 static const char *SDCARD_PATH = "SDCARD:";
 #define SDCARD_PATH_LENGTH 7
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
+
+static int usb_ms = 0;
 
 /*
  * The recovery tool communicates with the main system through /cache files.
@@ -396,7 +399,7 @@ choose_update_file()
             ui_print("\n-- any other key to abort..");
             int confirm_apply = ui_wait_key();
             if (confirm_apply == KEY_DREAM_HOME) {
-                ui_print("\n-- Install from sdcard...\n");
+                ui_print("\nInstall from sdcard...\n");
                 int status = install_package(files[chosen_item]);
                 if (status != INSTALL_SUCCESS) {
                     ui_set_background(BACKGROUND_ICON_ERROR);
@@ -425,6 +428,121 @@ out:
         free(files[i]);
     }
     free(files);
+}
+
+static int
+choose_tar_file(char* sfpath)
+{
+    static char* headers[] = { "Choose backup TAR file",
+                               "",
+                               "Use Up/Down keys to highlight;",
+                               "click OK to select.",
+                               "",
+                               NULL };
+
+    char path[PATH_MAX] = "";
+    DIR *dir;
+    struct dirent *de;
+    char **files;
+    int total = 0;
+	int retval = 1;
+    int i;
+
+    if (ensure_root_path_mounted(SDCARD_PATH) != 0) {
+        LOGE("Can't mount %s\n", SDCARD_PATH);
+        return 1;
+    }
+
+    if (translate_root_path(SDCARD_PATH, path, sizeof(path)) == NULL) {
+        LOGE("Bad path %s", path);
+        return 2;
+    }
+
+	strcat(path, "samdroid/");
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        LOGE("Couldn't open directory %s", path);
+        return 3;
+    }
+
+    /* count how many files we're looking at */
+    while ((de = readdir(dir)) != NULL) {
+        char *extension = strrchr(de->d_name, '.');
+        if (extension == NULL || de->d_name[0] == '.') {
+            continue;
+        } else if (!strcasecmp(extension, ".tar")) {
+            total++;
+        }
+    }
+
+    /* allocate the array for the file list menu */
+    files = (char **) malloc((total + 1) * sizeof(*files));
+    files[total] = NULL;
+
+    /* set it up for the second pass */
+    rewinddir(dir);
+
+    /* put the names in the array for the menu */
+    i = 0;
+    while ((de = readdir(dir)) != NULL) {
+        char *extension = strrchr(de->d_name, '.');
+        if (extension == NULL || de->d_name[0] == '.') {
+            continue;
+        } else if (!strcasecmp(extension, ".tar")) {
+            files[i] = (char *) malloc(SDCARD_PATH_LENGTH + strlen(de->d_name) + 1);
+            //strcpy(files[i], SDCARD_PATH);
+            //strcat(files[i], de->d_name);
+			strcpy(files[i], de->d_name);
+            i++;
+        }
+    }
+
+    /* close directory handle */
+    if (closedir(dir) < 0) {
+        LOGE("Failure closing directory %s", path);
+        goto out;
+    }
+
+    ui_start_menu(headers, files);
+    int selected = 0;
+    int chosen_item = -1;
+
+    finish_recovery(NULL);
+    ui_reset_progress();
+    for (;;) {
+        int key = ui_wait_key();
+        int visible = ui_text_visible();
+
+        if (key == KEY_DREAM_BACK) {
+            break;
+        } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN || key == KEY_I5700_DOWN) && visible) {
+            ++selected;
+            selected = ui_menu_select(selected);
+        } else if ((key == KEY_UP || key == KEY_VOLUMEUP || key == KEY_I5700_UP) && visible) {
+            --selected;
+            selected = ui_menu_select(selected);
+        } else if ((key == BTN_MOUSE || key == KEY_I5700_CENTER) && visible) {
+            chosen_item = selected;
+        }
+
+        if (chosen_item >= 0) {
+            // turn off the menu, letting ui_print() to scroll output
+            // on the screen.
+            ui_end_menu();
+			strcpy(sfpath, files[chosen_item]);
+			retval = 0;
+			break;				
+        }
+    }
+
+out:
+
+    for (i = 0; i < total; i++) {
+        free(files[i]);
+    }
+    free(files);
+	return retval;
 }
 
 static void
@@ -484,7 +602,7 @@ choose_wipe_type()
             ui_print("\n-- any other key to abort..");
             int confirm_wipe = ui_wait_key();
 			if (confirm_wipe == KEY_DREAM_HOME) {
-              	ui_print("\n-- Wiping data...\n");
+              	ui_print("\nWiping data...\n");
 				switch (chosen_item) {
 					case WTYPE_DATA_CACHE:
 		                erase_root("DATA:");
@@ -534,6 +652,273 @@ choose_wipe_type()
     }
 }
 
+int
+get_selected_item(char** headers, char** items) 
+{
+    ui_start_menu(headers, items);
+    int selected = 0;
+    int chosen_item = -1;
+
+    finish_recovery(NULL);
+    ui_reset_progress();
+    for (;;) {
+        int key = ui_wait_key();
+        int visible = ui_text_visible();
+
+        if (key == KEY_DREAM_BACK) {
+			chosen_item = 0;
+            break;
+        } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN || key == KEY_I5700_DOWN) && visible) {
+            ++selected;
+            selected = ui_menu_select(selected);
+        } else if ((key == KEY_UP || key == KEY_VOLUMEUP || key == KEY_I5700_UP) && visible) {
+            --selected;
+            selected = ui_menu_select(selected);
+        } else if ((key == BTN_MOUSE || key == KEY_I5700_CENTER) && visible) {
+        	chosen_item = selected;
+			break;
+		}
+    }
+    ui_end_menu();
+	return chosen_item;
+}
+
+static void
+choose_mount_type()
+{
+    static char* headers[] = { 	"Choose what you want to mount?"
+                        		"",
+                        		"Use Up/Down and OK to select",
+                        		"",
+                        		NULL };
+
+#define MNTTYPE_BACK		0
+#define MNTTYPE_SYSTEM	 	1
+#define MNTTYPE_DATA	 	2
+#define MNTTYPE_SDCARD	 	3
+#define MNTTYPE_USB_MS	 	4
+
+	static char* partition[] = { "SYSTEM:", "DATA:", "SDCARD:" };
+
+	char** items = (char**) malloc(7 * sizeof(char*));
+ 
+    for (;;) {
+
+	   	items[0] = "Back to main menu";
+		items[1] = !is_root_path_mounted("SYSTEM:") ? "Mount /system" : "Unmount /system";
+		items[2] = !is_root_path_mounted("DATA:") ? "Mount /data" : "Unmount /data";
+		items[3] = !is_root_path_mounted("SDCARD:") ? "Mount /sdcard" : "Unmount /sdcard";
+		items[4] = !usb_ms ? "Enable USB Mass Storage" : "Disable USB Mass Storage";
+		items[5] = NULL;
+
+	    int chosen_item = get_selected_item(headers, items);
+
+        if (chosen_item >= 0) {
+			if (chosen_item == MNTTYPE_BACK) break;
+
+            // turn off the menu, letting ui_print() to scroll output
+            // on the screen.
+			switch (chosen_item) {
+				case MNTTYPE_SYSTEM:
+				case MNTTYPE_DATA:
+				case MNTTYPE_SDCARD:
+					if (is_root_path_mounted(partition[chosen_item-1])) {
+						if (!ensure_root_path_unmounted(partition[chosen_item-1])) {
+							ui_print("\nUnmounted %s", partition[chosen_item-1]);
+						}
+					} else {
+						if (!ensure_root_path_mounted(partition[chosen_item-1])) {
+							ui_print("\nMounted %s", partition[chosen_item-1]);
+						}
+					}
+					break;
+				case MNTTYPE_USB_MS:
+					if (usb_ms) {
+						system("echo > /sys/devices/platform/s3c6410-usbgadget/gadget/lun0/file");
+					} else {
+						system("echo /dev/block/mmcblk0p1 > /sys/devices/platform/s3c6410-usbgadget/gadget/lun0/file");
+					}
+					usb_ms = !usb_ms;
+					break;
+			}
+        }
+    }
+}
+
+
+
+static void
+choose_backup_type()
+{
+    static char* headers[] = { 	"Choose what you want to backup?"
+                        		"",
+                        		"Use Up/Down and OK to select",
+                        		"",
+                        		NULL };
+
+#define BRTYPE_BACK			0
+#define BRTYPE_B_SYS		1
+#define BRTYPE_B_DATA	 	2
+#define BRTYPE_HL1		 	3
+#define BRTYPE_RESTORE	 	4
+#define BRTYPE_REST_FORMAT 	5
+
+	char st[255];
+	static char* backup_parts[] = { "/system", "/data"};
+	static char* backup_file[] = { "Sys", "Data"};
+
+    static char* items[] = { 	"Back to main menu",
+			     				"TAR backup system",
+			     				"TAR backup data",
+								"    -------",
+                                "TAR restore",
+                                "TAR restore (+ format)",
+			 			     	NULL };
+
+
+    for (;;) {
+
+	    int chosen_item = get_selected_item(headers, items);
+
+		if (chosen_item >= BRTYPE_RESTORE) {
+			char sfpath[255];
+			if (choose_tar_file(st) == 0) {
+	            ui_print("\n-- Press HOME to confirm, or");
+    	        ui_print("\n-- any other key to abort..");
+				if (ui_wait_key() == KEY_DREAM_HOME) {
+					switch (chosen_item) {
+						case BRTYPE_REST_FORMAT:
+			             	ui_print("\nFormating ");
+							if (strstr(st, "_Sys.")) {
+								if (!ensure_root_path_unmounted("SYSTEM:")) {
+									ui_print("/system");
+								    if (!format_root_device("SYSTEM:")) ui_print("ok");
+								}
+							}
+							if (strstr(st, "_Data.")) {
+								if (!ensure_root_path_unmounted("DATA:")) {
+									ui_print("/data");
+								    if (!format_root_device("DATA:")) ui_print("ok");
+								}
+							}
+						case BRTYPE_RESTORE:
+							strcpy(sfpath, "/sdcard/samdroid/");
+							strcat(sfpath, st);
+
+							ui_print("\nMount ");
+							if (strstr(st, "_Sys.")) {
+								ui_print("/system");
+								if (ensure_root_path_mounted("SYSTEM:")) { ui_print("\nError mount /system\n"); return; }
+							}
+							if (strstr(st, "_Data.")) {
+								ui_print("/data");
+								if (ensure_root_path_mounted("DATA:")) { ui_print("\nError mount /data\n"); return; }
+							}
+
+			             	ui_print("\nRestoring..");
+
+	                        pid_t pid = fork();
+    	                    if (pid == 0) {
+        	                    char *args[] = {"/xbin/busybox", "tar", "-x", "-f", sfpath, NULL};
+            	                execv("/xbin/busybox", args);
+                	            fprintf(stderr, "E:Can't backup\n(%s)\n", strerror(errno));
+   	                	        _exit(-1);
+                        	}
+
+	   	                    int status;
+		
+    	                    while (waitpid(pid, &status, WNOHANG) == 0) {
+        	                    ui_print(".");
+            	                sleep(1);
+   	            	        }
+       	            	    ui_print("\n");
+
+	          	            if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+								 LOGE("Can't extract tar file %s\n", st);
+        	                } else {
+	   			                 ui_print("\nRestore complete.\n");
+       	        	        }
+							break;
+					}
+					continue;
+				}
+			}
+            ui_print("\nData restore aborted.\n");
+			continue;
+		}
+
+        if (chosen_item >= 0 && chosen_item < BRTYPE_HL1) {
+			if (chosen_item == BRTYPE_BACK) break;
+
+            ui_print("\n-- Press HOME to confirm, or");
+            ui_print("\n-- any other key to abort..");
+            int confirm_wipe = ui_wait_key();
+			if (confirm_wipe == KEY_DREAM_HOME) {
+				switch (chosen_item) {
+					case BRTYPE_B_SYS:
+						if (ensure_root_path_mounted("SYSTEM:")) { ui_print("\nError mount /system\n"); return; }
+						break;
+					case BRTYPE_B_DATA:
+						if (ensure_root_path_mounted("DATA:")) { ui_print("\nError mount /data\n"); return; }
+						break;
+				}
+				switch (chosen_item) {
+					case BRTYPE_B_SYS:
+					case BRTYPE_B_DATA:
+						if (ensure_root_path_mounted("SDCARD:")) { ui_print("\nError mount sdcard\n"); return; }
+
+		              	ui_print("\nBackuping: ");
+						ui_print(backup_parts[chosen_item-1]);
+						ui_print("\n");
+
+						// create backup folder
+						mkdir("/sdcard/samdroid", 0777);
+
+						// create file name
+						time_t rawtime;
+						struct tm * ti;
+						time ( &rawtime );
+					    ti = localtime ( &rawtime );
+						strftime(st,255,"/sdcard/samdroid/Backup_%Y%m%d-%H%M%S_",ti);
+						strcat(st, backup_file[chosen_item-1]);
+						strcat(st, ".tar");
+
+                        pid_t pid = fork();
+                        if (pid == 0) {
+                            char *args[] = {"/xbin/busybox", "tar", "-c", "--exclude=*RFS_LOG.LO*", "-f", st, backup_parts[chosen_item-1], NULL};
+                            execv("/xbin/busybox", args);
+                            fprintf(stderr, "E:Can't backup\n(%s)\n", strerror(errno));
+   	                        _exit(-1);
+                        }
+
+   	                    int status;
+	
+                        while (waitpid(pid, &status, WNOHANG) == 0) {
+                            ui_print(".");
+                            sleep(1);
+   	                    }
+       	                ui_print("\n");
+
+          	            if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+							 LOGE("Can't create tar file %s\n", st);
+                        } else {
+	   		                 ui_print("Backup complete.\n");
+       	                }
+
+						break;
+				}
+			
+            } else {
+                ui_print("\nData backup aborted.\n");
+            }
+
+            if (!ui_text_visible()) break;
+        }
+
+	
+    }
+}
+
 static void
 choose_sdparted_type()
 {
@@ -547,116 +932,91 @@ choose_sdparted_type()
 #define SDPARTED_256M	 	1
 #define SDPARTED_384M	 	2
 #define SDPARTED_512M	 	3
-#define SDPARTED_0			4
+#define SDPARTED_768M	 	4
+#define SDPARTED_1024M	 	5
+#define SDPARTED_0			6
+#define SDPARTED_FORMAT		7
 	
-	static char* part_size[] = { "256M", "384M", "512M" , "0" };
+	static char* part_size[] = { "256M", "384M", "512M" , "768M" , "1024M" , "0" };
 
     static char* items[] = { 	"Back to main menu",
 			     				"Make 256M ext2 on SD",
 			     				"Make 384M ext2 on SD",
 			     				"Make 512M ext2 on SD",
-							"No additional partition",
+			     				"Make 786M ext2 on SD",
+			     				"Make 1024M ext2 on SD",
+								"Delete second partition",
+								"Format second partition (ext2)",
 			 			     	NULL };
 
-
-    ui_start_menu(headers, items);
-    int selected = 0;
-    int chosen_item = -1;
-
-    finish_recovery(NULL);
-    ui_reset_progress();
     for (;;) {
-        int key = ui_wait_key();
-        int visible = ui_text_visible();
-
-
-        if (key == KEY_DREAM_BACK) {
-            break;
-        } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN || key == KEY_I5700_DOWN) && visible) {
-            ++selected;
-            selected = ui_menu_select(selected);
-        } else if ((key == KEY_UP || key == KEY_VOLUMEUP || key == KEY_I5700_UP) && visible) {
-            --selected;
-            selected = ui_menu_select(selected);
-        } else if ((key == BTN_MOUSE || key == KEY_I5700_CENTER) && visible) {
-            chosen_item = selected;
-        }
-
+	    int chosen_item = get_selected_item(headers, items);
 
         if (chosen_item >= 0) {
 			if (chosen_item == SDPARTED_BACK) break;
 
-            // turn off the menu, letting ui_print() to scroll output
-            // on the screen.
-            ui_end_menu();
-
             ui_print("\n-- This will ERASE");
-            ui_print("\n--    your data on SDCARD !!!");
+			if (SDPARTED_FORMAT == chosen_item) {
+	            ui_print("\n-- your data on 2nd part !!!");
+			}
+			else {
+	            ui_print("\n--    your data on SDCARD !!!");
+			}
             ui_print("\n-- Press HOME to confirm, or");
             ui_print("\n-- any other key to abort..");
-            int confirm_wipe = ui_wait_key();
-			if (confirm_wipe == KEY_DREAM_HOME && (chosen_item >= SDPARTED_256M || chosen_item <= SDPARTED_0)) {
-            	ui_print("\n-- Formating SDCARD");
 
-	            pid_t pid = fork();
-	            if (pid == 0) {
-	            	char *args[] = {"/xbin/sdparted", "-es", part_size[chosen_item-1], "-ss", "0", "-s", NULL};
-	                execv("/xbin/sdparted", args);
-	                fprintf(stderr, "E:Can't format sdcard\n(%s)\n", strerror(errno));
-    	            _exit(-1);
-	            }
+			if (ui_wait_key() == KEY_DREAM_HOME) {
+				if (chosen_item == SDPARTED_FORMAT) {
+	            	ui_print("\nFormating 2nd partition (ext2)");
 	
-    	        int status;
-		
-	            while (waitpid(pid, &status, WNOHANG) == 0) {
-	    	        ui_print(".");
-	                sleep(1);
-    	        }
-        	    ui_print("\n");
-
-                if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
-              	    ui_print("Error formating sdcard.\n\n");
-                } else {
-                    ui_print("Format SDCARD complete.\n");
-        	    }
-
-/*
-					case WTYPE_DATA_CACHE:
-		                erase_root("DATA:");
-					case WTYPE_CACHE:
-        		        erase_root("CACHE:");
-		                ui_print("Data wipe complete.\n");
-						break;
-					case WTYPE_DELVIK_CACHE: {
-	                    if (ensure_root_path_mounted("DATA:") != 0) {
-	                        ui_print("Can't mount DATA\n");
-	                    } else {
- 				ui_print("Formatting DATA:dalvik-cache..");
-	                        pid_t pid = fork();
-	                        if (pid == 0) {
-	                            char *args[] = {"/xbin/rm", "-r", "/data/dalvik-cache", NULL};
-	                            execv("/xbin/rm", args);
-	                            fprintf(stderr, "E:Can't wipe dalvik-cache\n(%s)\n", strerror(errno));
-    	                        _exit(-1);
-	                        }
+		            pid_t pid = fork();
+		            if (pid == 0) {
+		            	char *args[] = {"/xbin/mke2fs", "/dev/block/mmcblk0p2", NULL};
+		                execv("/xbin/mke2fs", args);
+		                fprintf(stderr, "E:Can't format sdcard\n(%s)\n", strerror(errno));
+	    	            _exit(-1);
+		            }
 	
-    	                    int status;
+	    	        int status;
 		
-	                        while (waitpid(pid, &status, WNOHANG) == 0) {
-	                            ui_print(".");
-	                            sleep(1);
-    	                    }
-        	                ui_print("\n");
+		            while (waitpid(pid, &status, WNOHANG) == 0) {
+		    	        ui_print(".");
+		                sleep(1);
+	    	        }
+	        	    ui_print("\n");
 
-            	            if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
-                	             ui_print("Error wiping dalvik-cache.\n\n");
-	                        } else {
-		   		                 ui_print("Data wipe complete.\n");
-        	                }
-						}
-											}
-						break;
-*/
+	                if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+	              	    ui_print("Error formating.\n\n");
+	                } else {
+	                    ui_print("Format complete.\n");
+	        	    }
+				}
+			  	else if (chosen_item >= SDPARTED_256M || chosen_item <= SDPARTED_0) {
+	            	ui_print("\nFormating SDCARD");
+
+		            pid_t pid = fork();
+		            if (pid == 0) {
+		            	char *args[] = {"/xbin/sdparted", "-es", part_size[chosen_item-1], "-ss", "0", "-s", NULL};
+		                execv("/xbin/sdparted", args);
+		                fprintf(stderr, "E:Can't format sdcard\n(%s)\n", strerror(errno));
+	    	            _exit(-1);
+		            }
+	
+	    	        int status;
+		
+		            while (waitpid(pid, &status, WNOHANG) == 0) {
+		    	        ui_print(".");
+		                sleep(1);
+	    	        }
+	        	    ui_print("\n");
+
+	                if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+	              	    ui_print("Error formating sdcard.\n\n");
+	                } else {
+	                    ui_print("Format SDCARD complete.\n");
+	        	    }
+
+				}
             } else {
                 ui_print("\nFormat aborted.\n");
             }
@@ -664,8 +1024,6 @@ choose_sdparted_type()
             if (!ui_text_visible()) break;
             break;
         }
-
-	
     }
 }
 
@@ -685,17 +1043,21 @@ prompt_and_wait()
 #define ITEM_APPLY_UPDATE  1
 #define ITEM_APPLY_ANYZIP  2
 #define ITEM_SAMDROID      3
-#define ITEM_WIPE_DATA     4
-#define ITEM_PARTED		   5
-#define ITEM_RESTORE       6
-#define ITEM_FSCK          7
+#define ITEM_TAR_BACKUP    4
+#define ITEM_WIPE_DATA     5
+#define ITEM_PARTED		   6
+#define ITEM_MOUNT		   7
+#define ITEM_RESTORE       8
+#define ITEM_FSCK          9
 
     static char* items[] = { "Reboot system now [Home+Back]",
 		  			     	 "Apply sdcard/update.zip",
                              "Apply any zip from SD",
-						     "Samdroid v0.2.1 backup",
+						     "Samdroid v0.2.1 backup (4 Odin)",
+							 "TAR Backup/Restore ->",
                              "Wipe, choose what ->",
 							 "Partition sdcard ->",
+							 "Mount ->",
 			 			     NULL };
 
     static char* items0[] = { "Reboot system now [Home+Back]",
@@ -771,7 +1133,16 @@ prompt_and_wait()
 					choose_sdparted_type();
                     if (!ui_text_visible()) return;
                     break;
+    			
+	            case ITEM_TAR_BACKUP:
+					choose_backup_type();
+                    if (!ui_text_visible()) return;
+                    break;
 
+	            case ITEM_MOUNT:
+					choose_mount_type();
+                    if (!ui_text_visible()) return;
+                    break;
 
                 case ITEM_WIPE_DATA:
 					choose_wipe_type();
@@ -784,7 +1155,7 @@ prompt_and_wait()
 	            ui_print("\n-- any other key to abort..");
 	            int confirm_apply = ui_wait_key();
 	            if (confirm_apply == KEY_DREAM_HOME) {
-	                ui_print("\n-- Install from sdcard...\n");
+	                ui_print("\nInstall from sdcard...\n");
 	                int status = install_package(SDCARD_PACKAGE_FILE);
 	                if (status != INSTALL_SUCCESS) {
 	                    ui_set_background(BACKGROUND_ICON_ERROR);
